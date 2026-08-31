@@ -99,6 +99,46 @@ export async function initializeDatabase() {
     )
   `)
   await database.query(`CREATE INDEX IF NOT EXISTS relationship_requests_recipient_idx ON relationship_requests (recipient_id, status, created_at DESC)`)
+  await database.query(`
+    CREATE TABLE IF NOT EXISTS trips (
+      id UUID PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title VARCHAR(120) NOT NULL,
+      start_area TEXT NOT NULL DEFAULT '',
+      date_start DATE,
+      date_end DATE,
+      companion TEXT NOT NULL DEFAULT 'alone',
+      headcount SMALLINT NOT NULL DEFAULT 1 CHECK (headcount >= 1 AND headcount <= 100),
+      budget_per_person INTEGER NOT NULL DEFAULT 0 CHECK (budget_per_person >= 0),
+      transport TEXT NOT NULL DEFAULT 'public' CHECK (transport IN ('public', 'car')),
+      weather TEXT NOT NULL DEFAULT 'sunny',
+      likes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      dislikes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      route_coordinates JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await database.query(`
+    CREATE TABLE IF NOT EXISTS trip_stops (
+      id UUID PRIMARY KEY,
+      trip_id UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      stop_order SMALLINT NOT NULL CHECK (stop_order >= 0),
+      place_id TEXT,
+      place_name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'tour',
+      area TEXT NOT NULL DEFAULT '',
+      latitude DOUBLE PRECISION NOT NULL CHECK (latitude >= -90 AND latitude <= 90),
+      longitude DOUBLE PRECISION NOT NULL CHECK (longitude >= -180 AND longitude <= 180),
+      estimated_cost INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost >= 0),
+      duration_min INTEGER NOT NULL DEFAULT 0 CHECK (duration_min >= 0),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (trip_id, stop_order)
+    )
+  `)
+  await database.query(`CREATE INDEX IF NOT EXISTS trips_user_updated_idx ON trips (user_id, updated_at DESC)`)
+  await database.query(`CREATE INDEX IF NOT EXISTS trip_stops_trip_order_idx ON trip_stops (trip_id, stop_order)`)
 }
 
 export async function createPasswordUser({ username, name, password }) {
