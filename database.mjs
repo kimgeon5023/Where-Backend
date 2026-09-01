@@ -653,6 +653,17 @@ export async function closeDatabase() {
   await database.end()
 }
 
+export async function getPlaceReviewSummaries(placeIds) {
+  const ids = [...new Set(placeIds.filter((id) => typeof id === 'string' && id))]
+  if (!ids.length) return []
+  const result = await database.query(
+    `SELECT place_id, ROUND(AVG(rating)::numeric, 1)::double precision AS rating, COUNT(*)::INTEGER AS review_count
+     FROM place_reviews WHERE place_id = ANY($1::text[]) GROUP BY place_id`,
+    [ids],
+  )
+  return result.rows.map((row) => ({ placeId: row.place_id, rating: row.rating, reviewCount: row.review_count }))
+}
+
 export async function runMigrations() {
   const directory = join(dirname(fileURLToPath(import.meta.url)), '..', 'database', 'migrations')
   await database.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)

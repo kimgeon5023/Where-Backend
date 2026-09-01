@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, getPublicTrip, getTrip, initializeDatabase, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, respondToRelationshipRequest, searchSeoulAreas, siteId, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
+import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, respondToRelationshipRequest, searchSeoulAreas, siteId, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
 import { createGoogleAuthorizationUrl, fetchGoogleProfile } from './oauth.mjs'
 import { allowedOrigin, allowedOrigins, createRateLimiter, requestIp } from './security.mjs'
 
@@ -363,9 +363,11 @@ async function findPlaces(url) {
   const bounds = searchBounds(url)
   const cacheKey = JSON.stringify({ area, category, companion, keyword, tags, includeLodging, limit, page, lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4), radius: url.searchParams.get('radius') || '', bounds, zoom: url.searchParams.get('zoom') || '' })
   const cached = fromCache(placesCache, cacheKey)
-  if (cached) return cached
   try {
-    return cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging), placesCacheMaxEntries)
+    const result = cached || cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging), placesCacheMaxEntries)
+    const summaries = await getPlaceReviewSummaries(result.data.map((place) => place.id))
+    const summaryByPlace = new Map(summaries.map((summary) => [summary.placeId, summary]))
+    return { ...result, data: result.data.map((place) => ({ ...place, ...(summaryByPlace.get(place.id) || { rating: 0, reviewCount: 0 }) })) }
   } catch (error) {
     console.error('Kakao place search failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
     return { error: 'KAKAO_PLACES_UNAVAILABLE', status: 502 }
@@ -595,7 +597,9 @@ createServer(async (request, response) => {
       const rating = Number(input.rating)
       if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
-      return sendJson(response, 201, { data: await createPlaceReview({ userId, placeId, rating, content }) })
+      const review = await createPlaceReview({ userId, placeId, rating, content })
+      const [summary] = await getPlaceReviewSummaries([placeId])
+      return sendJson(response, 201, { data: { ...review, summary: summary || { placeId, rating, reviewCount: 1 } } })
     } catch { return sendJson(response, 400, { error: '후기를 등록하지 못했습니다.' }) }
   }
   if (request.method === 'DELETE' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
