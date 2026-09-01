@@ -35,6 +35,7 @@ const authSecret = process.env.AUTH_TOKEN_SECRET || createHash('sha256').update(
 const corsOrigins = allowedOrigins({ frontendUrl: process.env.FRONTEND_URL || '' })
 const rateLimiter = createRateLimiter()
 const kakaoCategoryCodes = { food: 'FD6', cafe: 'CE7', tour: 'AT4', photo: 'AT4', activity: 'CT1', lodging: 'AD5' }
+const kakaoCategoryKeywords = { food: '맛집', cafe: '카페', tour: '관광명소', photo: '사진 명소', activity: '놀거리', lodging: '숙소' }
 const livePlaceMeta = {
   food: { tags: ['foodie'], groupFit: ['friends', 'couple', 'family', 'alone'] },
   cafe: { tags: ['cafe', 'rest'], groupFit: ['friends', 'couple', 'alone'] },
@@ -323,16 +324,37 @@ async function searchKakaoPlaces(url, category, keyword, area, companion, limit,
   // 각 카카오 응답에 카테고리를 보존해야 지도 핀도 맛집·카페·관광지·숙소·액티비티 아이콘으로 구분된다.
   const profiles = requestedSearchProfiles(category, tags, includeLodging)
   const perCategoryLimit = Math.min(15, Math.max(3, Math.ceil(limit / profiles.length) + 3))
-  const responses = await Promise.all(profiles.map(async (profile) => {
-    const query = searchKeyword || profile.keyword ? `${area || '서울'} ${searchKeyword || profile.keyword}` : ''
+  const radius = String(Math.min(Number(url.searchParams.get('radius') || 8000), 20000))
+  const headers = { Authorization: `KakaoAK ${kakaoRestApiKey}` }
+  const requestDocuments = async (profile, query) => {
     const endpoint = query ? 'https://dapi.kakao.com/v2/local/search/keyword.json' : 'https://dapi.kakao.com/v2/local/search/category.json'
-    const params = new URLSearchParams({ size: String(perCategoryLimit), page: String(page), x: String(searchCenter.lng), y: String(searchCenter.lat), radius: String(Math.min(Number(url.searchParams.get('radius') || 8000), 20000)), ...(query ? { query } : { category_group_code: profile.categoryCode || kakaoCategoryCodes[profile.category] }) })
-    const response = await kakaoFetch(`${endpoint}?${params}`, { headers: { Authorization: `KakaoAK ${kakaoRestApiKey}` } })
+    const params = new URLSearchParams({ size: String(perCategoryLimit), page: String(page), x: String(searchCenter.lng), y: String(searchCenter.lat), radius, ...(query ? { query } : { category_group_code: profile.categoryCode || kakaoCategoryCodes[profile.category] }) })
+    const response = await kakaoFetch(`${endpoint}?${params}`, { headers })
     if (!response.ok) throw new Error(`KAKAO_PLACES_${response.status}`)
     const payload = await response.json()
-    const documents = selectedDistrict ? (payload.documents || []).filter((item) => `${item.address_name || ''} ${item.road_address_name || ''}`.includes(area)) : (payload.documents || [])
-    return { places: documents.map((item) => kakaoPlaceToPlace(item, profile.category, origin, profile.tags)), isEnd: Boolean(payload.meta?.is_end) }
+    return { documents: payload.documents || [], isEnd: Boolean(payload.meta?.is_end) }
+  }
+  const responses = await Promise.all(profiles.map(async (profile) => {
+    try {
+      const query = searchKeyword || profile.keyword ? `${area || '서울'} ${searchKeyword || profile.keyword}` : ''
+      let { documents, isEnd } = await requestDocuments(profile, query)
+      if (selectedDistrict) documents = documents.filter((item) => `${item.address_name || ''} ${item.road_address_name || ''}`.includes(area))
+      // A category response can use a shortened address and be filtered out even
+      // though Kakao has results in the selected district. Retry that one profile
+      // with an explicit district keyword before treating it as an empty result.
+      if (selectedDistrict && documents.length === 0 && !query) {
+        const fallback = await requestDocuments(profile, `${area} ${kakaoCategoryKeywords[profile.category] || profile.category}`)
+        documents = fallback.documents.filter((item) => `${item.address_name || ''} ${item.road_address_name || ''}`.includes(area))
+        isEnd = fallback.isEnd
+      }
+      return { places: documents.map((item) => kakaoPlaceToPlace(item, profile.category, origin, profile.tags)), isEnd, failed: false }
+    } catch (error) {
+      console.warn('Kakao category search failed:', profile.category, error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+      // One failed Kakao category must not hide successful results from the others.
+      return { places: [], isEnd: true, failed: true }
+    }
   }))
+  if (responses.every((response) => response.failed)) throw new Error('KAKAO_PLACES_UNAVAILABLE')
   const data = [...new Map(responses.flatMap((response) => response.places).map((place) => [place.id, place])).values()]
     .filter((place) => isInBounds(place, bounds))
     .sort((a, b) => a.distanceKm - b.distanceKm)
