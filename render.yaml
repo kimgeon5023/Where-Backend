@@ -4,6 +4,7 @@ services:
     runtime: node
     plan: free
     buildCommand: npm ci
+    preDeployCommand: npm run migrate
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -18,6 +19,8 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: API_BASE_URL
+        sync: false
+      - key: AUTH_TOKEN_SECRET
         sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false

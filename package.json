@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env server.mjs",
     "start": "node --env-file-if-exists=.env server.mjs",
+    "migrate": "node --env-file-if-exists=.env migrate.mjs",
     "check": "node --check server.mjs && node --check database.mjs && node --check oauth.mjs"
   },
   "engines": {
