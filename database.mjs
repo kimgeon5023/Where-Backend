@@ -40,6 +40,7 @@ function toUser(row) {
     name: row.name,
     email: row.email || `${row.username}@where-to-go.local`,
     provider: row.provider,
+    role: row.role || 'user',
     profileImage: row.profile_image,
     sourceSite: row.source_site,
     createdAt: toIsoString(row.created_at),
@@ -68,6 +69,7 @@ export async function initializeDatabase() {
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       provider TEXT NOT NULL DEFAULT 'password',
+      role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
       profile_image TEXT NOT NULL DEFAULT '',
       source_site TEXT NOT NULL DEFAULT 'legacy',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -77,6 +79,9 @@ export async function initializeDatabase() {
   await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS source_site TEXT NOT NULL DEFAULT 'legacy'`)
   await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`)
   await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS provider_user_id TEXT`)
+  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`)
+  await database.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`)
+  await database.query(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'))`)
   await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
   await database.query(`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`)
   await database.query(`ALTER TABLE users ALTER COLUMN password_salt DROP NOT NULL`)
@@ -288,6 +293,29 @@ export async function listCourses({ userId, page, limit }) {
   return { data: courses.rows.map((row) => toTrip(row)), pagination: { ...paging, total: total.rows[0].count } }
 }
 
+export async function isAdminUser(userId) {
+  const result = await database.query("SELECT 1 FROM users WHERE id = $1 AND role = 'admin'", [userId])
+  return result.rowCount > 0
+}
+
+export async function ensureConfiguredAdmin() {
+  const username = process.env.ADMIN_USERNAME?.trim().toLowerCase() || ''
+  const password = process.env.ADMIN_PASSWORD || ''
+  if (!username && !password) return false
+  if (!/^[a-z0-9_]{3,20}$/.test(username) || password.length < 8) {
+    throw new Error('ADMIN_CREDENTIALS_INVALID')
+  }
+
+  const { salt, hash } = passwordRecord(password)
+  await database.query(
+    `INSERT INTO users (id, username, name, password_hash, password_salt, provider, role, profile_image, source_site)
+     VALUES ($1, $2, 'Administrator', $3, $4, 'password', 'admin', '', $5)
+     ON CONFLICT (username) DO UPDATE SET role = 'admin'`,
+    [randomUUID(), username, hash, salt, siteId],
+  )
+  return true
+}
+
 function tripShareToken() {
   return randomBytes(18).toString('base64url')
 }
@@ -348,19 +376,20 @@ export async function createTrip({ userId, input }) {
 }
 
 export async function getTrip({ userId, tripId }) {
-  return tripDetail(database, 'id = $1 AND user_id = $2', [tripId, userId])
+  return tripDetail(database, 'id = $1 AND (user_id = $2 OR $3)', [tripId, userId, await isAdminUser(userId)])
 }
 
 export async function updateTrip({ userId, tripId, input }) {
+  const isAdmin = await isAdminUser(userId)
   const client = await database.connect()
   try {
     await client.query('BEGIN')
-    const existing = await client.query('SELECT share_token FROM trips WHERE id = $1 AND user_id = $2 FOR UPDATE', [tripId, userId])
+    const existing = await client.query('SELECT share_token FROM trips WHERE id = $1 AND (user_id = $2 OR $3) FOR UPDATE', [tripId, userId, isAdmin])
     if (!existing.rowCount) { const error = new Error('TRIP_NOT_FOUND'); error.code = 'TRIP_NOT_FOUND'; throw error }
     const shareToken = input.isPublic ? (existing.rows[0].share_token || tripShareToken()) : null
     const result = await client.query(
       `UPDATE trips SET title = $1, description = $2, start_area = $3, date_start = $4, date_end = $5, companion = $6, headcount = $7, budget_per_person = $8, transport = $9, weather = $10, likes = $11::jsonb, dislikes = $12::jsonb, route_coordinates = $13::jsonb, is_public = $14, share_token = $15, updated_at = NOW()
-       WHERE id = $16 AND user_id = $17 RETURNING *`, [...tripValues(input, shareToken), tripId, userId],
+       WHERE id = $16 AND (user_id = $17 OR $18) RETURNING *`, [...tripValues(input, shareToken), tripId, userId, isAdmin],
     )
     await client.query('DELETE FROM trip_stops WHERE trip_id = $1', [tripId])
     await insertTripStops(client, tripId, input.stops)
@@ -370,7 +399,7 @@ export async function updateTrip({ userId, tripId, input }) {
 }
 
 export async function deleteTrip({ userId, tripId }) {
-  const result = await database.query('DELETE FROM trips WHERE id = $1 AND user_id = $2', [tripId, userId])
+  const result = await database.query('DELETE FROM trips WHERE id = $1 AND (user_id = $2 OR $3)', [tripId, userId, await isAdminUser(userId)])
   return result.rowCount > 0
 }
 
@@ -412,7 +441,7 @@ export async function createPlaceReview({ userId, placeId, rating, content, imag
 export async function deletePlaceReview({ reviewId, userId }) {
   const found = await database.query('SELECT user_id FROM place_reviews WHERE id = $1', [reviewId])
   if (!found.rowCount) { const error = new Error('REVIEW_NOT_FOUND'); error.code = 'REVIEW_NOT_FOUND'; throw error }
-  if (found.rows[0].user_id !== userId) { const error = new Error('REVIEW_FORBIDDEN'); error.code = 'REVIEW_FORBIDDEN'; throw error }
+  if (found.rows[0].user_id !== userId && !(await isAdminUser(userId))) { const error = new Error('REVIEW_FORBIDDEN'); error.code = 'REVIEW_FORBIDDEN'; throw error }
   await database.query('DELETE FROM place_reviews WHERE id = $1', [reviewId])
 }
 
@@ -425,7 +454,7 @@ export async function createPasswordUser({ username, name, password }) {
       `INSERT INTO users
         (id, username, name, password_hash, password_salt, provider, profile_image, source_site)
        VALUES ($1, $2, $3, $4, $5, 'password', '', $6)
-       RETURNING id, username, name, email, provider, profile_image, source_site, created_at`,
+       RETURNING id, username, name, email, provider, role, profile_image, source_site, created_at`,
       [id, username, name, hash, salt, siteId],
     )
     return toUser(result.rows[0])
@@ -441,7 +470,7 @@ export async function createPasswordUser({ username, name, password }) {
 
 export async function authenticatePasswordUser({ username, password }) {
   const result = await database.query(
-    `SELECT id, username, name, email, password_hash, password_salt, provider, profile_image, source_site, created_at, last_login_at
+    `SELECT id, username, name, email, password_hash, password_salt, provider, role, profile_image, source_site, created_at, last_login_at
      FROM users WHERE username = $1 AND provider = 'password'`,
     [username],
   )
@@ -453,7 +482,7 @@ export async function authenticatePasswordUser({ username, password }) {
   }
   const updated = await database.query(
     `UPDATE users SET last_login_at = NOW() WHERE id = $1
-     RETURNING id, username, name, email, provider, profile_image, source_site, created_at, last_login_at`,
+     RETURNING id, username, name, email, provider, role, profile_image, source_site, created_at, last_login_at`,
     [user.id],
   )
   return toUser(updated.rows[0])
@@ -461,7 +490,7 @@ export async function authenticatePasswordUser({ username, password }) {
 
 export async function changePassword({ userId, currentPassword, newPassword }) {
   const result = await database.query(
-    `SELECT id, username, name, email, password_hash, password_salt, provider, profile_image, source_site, created_at, last_login_at
+    `SELECT id, username, name, email, password_hash, password_salt, provider, role, profile_image, source_site, created_at, last_login_at
      FROM users WHERE id = $1`,
     [userId],
   )
@@ -484,7 +513,7 @@ export async function changePassword({ userId, currentPassword, newPassword }) {
   const { salt, hash } = passwordRecord(newPassword)
   const updated = await database.query(
     `UPDATE users SET password_hash = $1, password_salt = $2 WHERE id = $3
-     RETURNING id, username, name, email, provider, profile_image, source_site, created_at, last_login_at`,
+     RETURNING id, username, name, email, provider, role, profile_image, source_site, created_at, last_login_at`,
     [hash, salt, userId],
   )
   return toUser(updated.rows[0])
@@ -493,7 +522,7 @@ export async function changePassword({ userId, currentPassword, newPassword }) {
 export async function updateUserProfile({ userId, name, profileImage }) {
   const result = await database.query(
     `UPDATE users SET name = $1, profile_image = $2 WHERE id = $3
-     RETURNING id, username, name, email, provider, profile_image, source_site, created_at, last_login_at`,
+     RETURNING id, username, name, email, provider, role, profile_image, source_site, created_at, last_login_at`,
     [name, profileImage, userId],
   )
   if (!result.rowCount) {
@@ -530,7 +559,7 @@ export async function upsertGoogleUser({ providerUserId, name, email, profileIma
        email = EXCLUDED.email,
        profile_image = EXCLUDED.profile_image,
        last_login_at = NOW()
-     RETURNING id, username, name, email, provider, profile_image, source_site, created_at, last_login_at`,
+     RETURNING id, username, name, email, provider, role, profile_image, source_site, created_at, last_login_at`,
     [
       randomUUID(),
       username,
@@ -547,7 +576,7 @@ export async function upsertGoogleUser({ providerUserId, name, email, profileIma
 
 export async function listUsers() {
   const result = await database.query(
-    `SELECT id, name, username, email, provider, provider_user_id, profile_image, source_site, created_at, last_login_at
+    `SELECT id, name, username, email, provider, role, provider_user_id, profile_image, source_site, created_at, last_login_at
      FROM users
      ORDER BY created_at DESC`,
   )

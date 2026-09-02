@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, respondToRelationshipRequest, searchSeoulAreas, siteId, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
+import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, ensureConfiguredAdmin, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, isAdminUser, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, listUsers, respondToRelationshipRequest, searchSeoulAreas, siteId, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
 import { createGoogleAuthorizationUrl, fetchGoogleProfile } from './oauth.mjs'
 import { allowedOrigin, allowedOrigins, createRateLimiter, requestIp } from './security.mjs'
 
@@ -32,7 +32,10 @@ const routesCacheMaxEntries = 100
 // dedicated secret. DATABASE_URL is required and remains server-only; production
 // deployments should still provide AUTH_TOKEN_SECRET explicitly.
 const authSecret = process.env.AUTH_TOKEN_SECRET || createHash('sha256').update(process.env.DATABASE_URL || '').digest('base64url')
-const corsOrigins = allowedOrigins({ frontendUrl: process.env.FRONTEND_URL || '' })
+// Keep the production frontend available even if the hosting environment has
+// not yet populated FRONTEND_URL. Additional origins remain opt-in through the
+// comma-separated FRONTEND_URL setting.
+const corsOrigins = allowedOrigins({ frontendUrl: process.env.FRONTEND_URL || 'https://where-silk.vercel.app' })
 const rateLimiter = createRateLimiter()
 const kakaoCategoryCodes = { food: 'FD6', cafe: 'CE7', tour: 'AT4', photo: 'AT4', activity: 'CT1', lodging: 'AD5' }
 const kakaoCategoryKeywords = { food: '맛집', cafe: '카페', tour: '관광명소', photo: '사진 명소', activity: '놀거리', lodging: '숙소' }
@@ -510,6 +513,7 @@ async function serveStatic(url, response) {
 }
 
 await initializeDatabase()
+await ensureConfiguredAdmin()
 
 createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', 'http://localhost:3001')
@@ -636,6 +640,23 @@ createServer(async (request, response) => {
     const userId = authenticatedUserId(request)
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
     return sendJson(response, 200, { data: await listOtherUsers(userId) })
+  }
+  if (request.method === 'GET' && url.pathname === '/api/admin/users') {
+    const userId = authenticatedUserId(request)
+    if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
+    if (!(await isAdminUser(userId))) return sendJson(response, 403, { error: '관리자 권한이 필요합니다.' })
+    return sendJson(response, 200, { data: await listUsers() })
+  }
+  if (request.method === 'DELETE' && /^\/api\/admin\/users\/[^/]+$/.test(url.pathname)) {
+    const userId = authenticatedUserId(request)
+    if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
+    if (!(await isAdminUser(userId))) return sendJson(response, 403, { error: '관리자 권한이 필요합니다.' })
+    const targetUserId = decodeURIComponent(url.pathname.split('/').at(-1) || '')
+    if (!targetUserId) return sendJson(response, 400, { error: '사용자 정보를 확인해 주세요.' })
+    if (targetUserId === userId) return sendJson(response, 400, { error: '관리자 계정은 여기서 삭제할 수 없습니다.' })
+    return await deleteUser(targetUserId)
+      ? sendJson(response, 200, { ok: true })
+      : sendJson(response, 404, { error: '사용자를 찾을 수 없습니다.' })
   }
   if (request.method === 'GET' && url.pathname === '/api/social/friends') {
     const userId = authenticatedUserId(request)
