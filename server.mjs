@@ -419,32 +419,46 @@ async function findRoute(input) {
   const stops = Array.isArray(input?.stops) ? input.stops.slice(0, 5) : []
   if (!validPoint(origin) || stops.length === 0 || !stops.every(validPoint)) return { error: 'INVALID_ROUTE_POINTS', status: 400 }
   if (input.transport !== 'car') return { error: 'PUBLIC_TRANSIT_ROUTE_UNAVAILABLE', status: 422 }
-  if (!kakaoMobilityRestApiKey) return { error: 'KAKAO_MOBILITY_NOT_CONFIGURED', status: 503 }
 
   const cacheKey = JSON.stringify({ origin, stops, transport: input.transport })
   const cached = fromCache(routesCache, cacheKey)
   if (cached) return cached
-  const destination = stops.at(-1)
-  const params = new URLSearchParams({
-    origin: `${origin.lng},${origin.lat}`,
-    destination: `${destination.lng},${destination.lat}`,
-    priority: 'TIME',
-    summary: 'false',
-  })
-  if (stops.length > 1) params.set('waypoints', stops.slice(0, -1).map((stop) => `${stop.lng},${stop.lat}`).join('|'))
-  try {
-    const response = await kakaoFetch(`https://apis-navi.kakaomobility.com/v1/directions?${params}`, {
-      headers: { Authorization: `KakaoAK ${kakaoMobilityRestApiKey}` },
+  if (kakaoMobilityRestApiKey) {
+    const destination = stops.at(-1)
+    const params = new URLSearchParams({
+      origin: `${origin.lng},${origin.lat}`,
+      destination: `${destination.lng},${destination.lat}`,
+      priority: 'TIME',
+      summary: 'false',
     })
-    if (!response.ok) throw new Error(`KAKAO_ROUTE_${response.status}`)
+    if (stops.length > 1) params.set('waypoints', stops.slice(0, -1).map((stop) => `${stop.lng},${stop.lat}`).join('|'))
+    try {
+      const response = await kakaoFetch(`https://apis-navi.kakaomobility.com/v1/directions?${params}`, {
+        headers: { Authorization: `KakaoAK ${kakaoMobilityRestApiKey}` },
+      })
+      if (!response.ok) throw new Error(`KAKAO_ROUTE_${response.status}`)
+      const payload = await response.json()
+      const summary = payload.routes?.[0]?.summary
+      const coordinates = routeCoordinates(payload)
+      if (!summary || coordinates.length < 2) throw new Error('KAKAO_ROUTE_EMPTY')
+      return cacheValue(routesCache, cacheKey, { data: { coordinates, distanceMeters: summary.distance, durationSeconds: summary.duration } }, routesCacheMaxEntries)
+    } catch (error) {
+      console.error('Kakao route search failed, trying OSRM:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+    }
+  }
+
+  try {
+    const points = [origin, ...stops].map((point) => `${point.lng},${point.lat}`).join(';')
+    const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${points}?overview=full&geometries=geojson&steps=false`, { signal: AbortSignal.timeout(12_000) })
+    if (!response.ok) throw new Error(`OSRM_ROUTE_${response.status}`)
     const payload = await response.json()
-    const summary = payload.routes?.[0]?.summary
-    const coordinates = routeCoordinates(payload)
-    if (!summary || coordinates.length < 2) throw new Error('KAKAO_ROUTE_EMPTY')
-    return cacheValue(routesCache, cacheKey, { data: { coordinates, distanceMeters: summary.distance, durationSeconds: summary.duration } }, routesCacheMaxEntries)
+    const route = payload.routes?.[0]
+    const coordinates = route?.geometry?.coordinates?.map(([lng, lat]) => ({ lat, lng })) || []
+    if (!route || coordinates.length < 2) throw new Error('OSRM_ROUTE_EMPTY')
+    return cacheValue(routesCache, cacheKey, { data: { coordinates, distanceMeters: Math.round(route.distance), durationSeconds: Math.round(route.duration) } }, routesCacheMaxEntries)
   } catch (error) {
-    console.error('Kakao route search failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
-    return { error: 'KAKAO_ROUTE_UNAVAILABLE', status: 502 }
+    console.error('Fallback route search failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+    return { error: 'ROAD_ROUTE_UNAVAILABLE', status: 502 }
   }
 }
 
