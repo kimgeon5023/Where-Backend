@@ -428,7 +428,7 @@ async function findRoute(input) {
   const params = new URLSearchParams({
     origin: `${origin.lng},${origin.lat}`,
     destination: `${destination.lng},${destination.lat}`,
-    priority: 'RECOMMEND',
+    priority: 'TIME',
     summary: 'false',
   })
   if (stops.length > 1) params.set('waypoints', stops.slice(0, -1).map((stop) => `${stop.lng},${stop.lat}`).join('|'))
