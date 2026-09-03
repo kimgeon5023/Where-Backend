@@ -618,12 +618,16 @@ createServer(async (request, response) => {
     const userId = authenticatedUserId(request)
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
     try {
-      const input = await readJsonBody(request, 16_384)
+      // Client images are compressed before upload; keep payloads bounded.
+      const input = await readJsonBody(request, 800_000)
       const content = typeof input.content === 'string' ? input.content.trim() : ''
       const rating = Number(input.rating)
+      const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
+      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 700_000)
       if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
+      if (!validImage) return sendJson(response, 400, { error: 'Review image must be a compressed JPEG, PNG, or WebP.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
-      const review = await createPlaceReview({ userId, placeId, rating, content })
+      const review = await createPlaceReview({ userId, placeId, rating, content, imageUrl })
       const [summary] = await getPlaceReviewSummaries([placeId])
       return sendJson(response, 201, { data: { ...review, summary: summary || { placeId, rating, reviewCount: 1 } } })
     } catch { return sendJson(response, 400, { error: '후기를 등록하지 못했습니다.' }) }
