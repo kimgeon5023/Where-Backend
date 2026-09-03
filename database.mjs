@@ -192,10 +192,14 @@ export async function initializeDatabase() {
       place_id TEXT NOT NULL,
       rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
       content TEXT NOT NULL CHECK (char_length(content) <= 1000),
+      image_url TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+  // Existing production databases were created before review photos existed.
+  // Keep startup migration-free, but make this additive schema requirement safe.
+  await database.query(`ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`)
   await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_place_created_idx ON place_reviews (place_id, created_at DESC)`)
   await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_created_idx ON place_reviews (created_at DESC)`)
 }
