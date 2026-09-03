@@ -653,19 +653,22 @@ async function handleRequest(request, response) {
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
     try {
       // Client images are compressed before upload; keep payloads bounded.
-      const input = await readJsonBody(request, 800_000)
+      const input = await readJsonBody(request, 900_000)
       const content = typeof input.content === 'string' ? input.content.trim() : ''
       const rating = Number(input.rating)
       const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
       const placeName = typeof input.placeName === 'string' ? input.placeName.trim().slice(0, 160) : ''
-      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 700_000)
+      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 600_000)
       if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
       if (!validImage) return sendJson(response, 400, { error: 'Review image must be a compressed JPEG, PNG, or WebP.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
       const review = await createPlaceReview({ userId, placeId, placeName, rating, content, imageUrl })
       const [summary] = await getPlaceReviewSummaries([placeId])
       return sendJson(response, 201, { data: { ...review, user_id: userId, summary: summary || { placeId, rating, reviewCount: 1 } } })
-    } catch { return sendJson(response, 400, { error: '후기를 등록하지 못했습니다.' }) }
+    } catch (error) {
+      console.error('Review creation failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+      return sendJson(response, error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 503, { error: '리뷰 서버 연결이 잠시 지연되고 있어요. 잠시 후 다시 시도해 주세요.' })
+    }
   }
   if (request.method === 'PUT' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)
