@@ -512,10 +512,39 @@ async function serveStatic(url, response) {
   return true
 }
 
-await initializeDatabase()
-await ensureConfiguredAdmin()
+let databaseReady = false
+let databaseError = ''
 
-createServer(async (request, response) => {
+// Render must be able to bind its assigned port even while PostgreSQL is
+// temporarily unavailable. Retry DB initialization in the background instead
+// of terminating the web process.
+function initializeDatabaseInBackground() {
+  void (async () => {
+    try {
+      await initializeDatabase()
+      await ensureConfiguredAdmin()
+      databaseReady = true
+      databaseError = ''
+      console.log('Database initialization complete.')
+    } catch (error) {
+      databaseError = error instanceof Error ? error.message : 'DATABASE_UNAVAILABLE'
+      console.error('Database initialization failed:', databaseError)
+      setTimeout(initializeDatabaseInBackground, 30_000)
+    }
+  })()
+}
+
+initializeDatabaseInBackground()
+
+const server = createServer((request, response) => {
+  void handleRequest(request, response).catch((error) => {
+    console.error('Unhandled request error:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+    if (!response.headersSent) sendJson(response, 503, { error: 'SERVICE_TEMPORARILY_UNAVAILABLE' })
+    else response.end()
+  })
+})
+
+async function handleRequest(request, response) {
   const url = new URL(request.url ?? '/', 'http://localhost:3001')
   const origin = typeof request.headers.origin === 'string' ? request.headers.origin : ''
   response.corsOrigin = allowedOrigin(origin, corsOrigins)
@@ -526,7 +555,7 @@ createServer(async (request, response) => {
     response.setHeader('Retry-After', String(rate.retryAfterSeconds))
     return sendJson(response, 429, { error: 'RATE_LIMITED', retryAfterSeconds: rate.retryAfterSeconds })
   }
-  if (request.method === 'GET' && url.pathname === '/api/health') return sendJson(response, 200, { ok: true, database: 'postgresql', siteId })
+  if (request.method === 'GET' && url.pathname === '/api/health') return sendJson(response, 200, { ok: true, database: databaseReady ? 'postgresql' : 'unavailable', siteId, ...(databaseError ? { databaseError: 'DATABASE_UNAVAILABLE' } : {}) })
   if (request.method === 'GET' && url.pathname === '/api/areas') {
     const query = url.searchParams.get('q') || ''
     const limit = url.searchParams.get('limit') || '8'
@@ -781,4 +810,6 @@ createServer(async (request, response) => {
   }
   if (request.method === 'GET' && await serveStatic(url, response)) return
   return sendJson(response, 404, { error: 'Not found' })
-}).listen(port, () => console.log(`Where API: http://localhost:${port}`))
+}
+
+server.listen(port, '0.0.0.0', () => console.log(`Where API listening on 0.0.0.0:${port}`))

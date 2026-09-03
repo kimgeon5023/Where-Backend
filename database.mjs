@@ -9,10 +9,6 @@ const connectionString = process.env.DATABASE_URL?.trim()
 const useSsl = process.env.DATABASE_SSL !== 'false'
 const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true'
 
-if (!connectionString) {
-  throw new Error('DATABASE_URL is required. Add the cloud PostgreSQL connection URL to Where/.env.')
-}
-
 export const siteId = process.env.SITE_ID?.trim() || 'where-main'
 
 const database = new Pool({
@@ -61,6 +57,10 @@ function passwordMatches(password, hash, salt) {
 }
 
 export async function initializeDatabase() {
+  // Do not fail module loading when a host has not injected its secret yet.
+  // The HTTP server can still answer its health check and report the database
+  // state instead of being terminated by an import-time exception.
+  if (!connectionString) throw new Error('DATABASE_URL is required.')
   await database.query(`
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY,
