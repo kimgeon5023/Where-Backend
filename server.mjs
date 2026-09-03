@@ -658,7 +658,7 @@ async function handleRequest(request, response) {
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
       const review = await createPlaceReview({ userId, placeId, rating, content, imageUrl })
       const [summary] = await getPlaceReviewSummaries([placeId])
-      return sendJson(response, 201, { data: { ...review, summary: summary || { placeId, rating, reviewCount: 1 } } })
+      return sendJson(response, 201, { data: { ...review, user_id: userId, summary: summary || { placeId, rating, reviewCount: 1 } } })
     } catch { return sendJson(response, 400, { error: '후기를 등록하지 못했습니다.' }) }
   }
   if (request.method === 'DELETE' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
