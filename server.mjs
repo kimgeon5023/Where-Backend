@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, ensureConfiguredAdmin, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, isAdminUser, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, listUsers, respondToRelationshipRequest, searchSeoulAreas, siteId, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
+import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, ensureConfiguredAdmin, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, isAdminUser, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, listUsers, respondToRelationshipRequest, searchSeoulAreas, siteId, updatePlaceReview, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
 import { createGoogleAuthorizationUrl, fetchGoogleProfile } from './oauth.mjs'
 import { allowedOrigin, allowedOrigins, createRateLimiter, requestIp } from './security.mjs'
 
@@ -638,6 +638,11 @@ async function handleRequest(request, response) {
     const result = await listReviews({ placeId: url.searchParams.get('placeId') || '', page: url.searchParams.get('page'), limit: url.searchParams.get('limit') })
     return sendJson(response, 200, { ...result, pagination: { ...result.pagination, totalPages: Math.ceil(result.pagination.total / result.pagination.limit) } })
   }
+  if (request.method === 'GET' && url.pathname === '/api/my/reviews') {
+    const userId = authenticatedUserId(request)
+    if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
+    return sendJson(response, 200, await listReviews({ userId, page: url.searchParams.get('page'), limit: url.searchParams.get('limit') || '100' }))
+  }
   if (request.method === 'GET' && /^\/api\/places\/[^/]+\/reviews$/.test(url.pathname)) {
     const placeId = decodeURIComponent(url.pathname.split('/')[3])
     const result = await listReviews({ placeId, page: url.searchParams.get('page'), limit: url.searchParams.get('limit') })
@@ -652,14 +657,29 @@ async function handleRequest(request, response) {
       const content = typeof input.content === 'string' ? input.content.trim() : ''
       const rating = Number(input.rating)
       const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
+      const placeName = typeof input.placeName === 'string' ? input.placeName.trim().slice(0, 160) : ''
       const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 700_000)
       if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
       if (!validImage) return sendJson(response, 400, { error: 'Review image must be a compressed JPEG, PNG, or WebP.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
-      const review = await createPlaceReview({ userId, placeId, rating, content, imageUrl })
+      const review = await createPlaceReview({ userId, placeId, placeName, rating, content, imageUrl })
       const [summary] = await getPlaceReviewSummaries([placeId])
       return sendJson(response, 201, { data: { ...review, user_id: userId, summary: summary || { placeId, rating, reviewCount: 1 } } })
     } catch { return sendJson(response, 400, { error: '후기를 등록하지 못했습니다.' }) }
+  }
+  if (request.method === 'PUT' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
+    const userId = authenticatedUserId(request)
+    if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
+    try {
+      const input = await readJsonBody(request, 800_000)
+      const content = typeof input.content === 'string' ? input.content.trim() : ''
+      const rating = Number(input.rating)
+      const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
+      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 700_000)
+      if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5 || !validImage) return sendJson(response, 400, { error: '후기 내용, 별점, 사진을 확인해 주세요.' })
+      const review = await updatePlaceReview({ reviewId: url.pathname.split('/').at(-1), userId, rating, content, imageUrl })
+      return sendJson(response, 200, { data: { ...review, user_id: userId } })
+    } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 400, { error: '후기를 수정하지 못했습니다.' }) }
   }
   if (request.method === 'DELETE' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)

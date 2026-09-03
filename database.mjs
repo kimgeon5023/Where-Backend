@@ -190,6 +190,7 @@ export async function initializeDatabase() {
       id UUID PRIMARY KEY,
       user_id UUID REFERENCES users(id) ON DELETE SET NULL,
       place_id TEXT NOT NULL,
+      place_name TEXT NOT NULL DEFAULT '',
       rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
       content TEXT NOT NULL CHECK (char_length(content) <= 1000),
       image_url TEXT NOT NULL DEFAULT '',
@@ -200,6 +201,7 @@ export async function initializeDatabase() {
   // Existing production databases were created before review photos existed.
   // Keep startup migration-free, but make this additive schema requirement safe.
   await database.query(`ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`)
+  await database.query(`ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS place_name TEXT NOT NULL DEFAULT ''`)
   await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_place_created_idx ON place_reviews (place_id, created_at DESC)`)
   await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_created_idx ON place_reviews (created_at DESC)`)
 }
@@ -411,15 +413,19 @@ export async function getPublicTrip(shareToken) {
   return tripDetail(database, 'share_token = $1 AND is_public = TRUE', [shareToken])
 }
 
-export async function listReviews({ placeId, page, limit }) {
+export async function listReviews({ placeId, userId, page, limit }) {
   const paging = paginationValues(page, limit)
-  const values = placeId ? [placeId, paging.limit, paging.offset] : [paging.limit, paging.offset]
-  const where = placeId ? 'WHERE r.place_id = $1' : ''
-  const limitIndex = placeId ? '$2' : '$1'
-  const offsetIndex = placeId ? '$3' : '$2'
+  const filters = []
+  const values = []
+  if (placeId) { values.push(placeId); filters.push(`r.place_id = $${values.length}`) }
+  if (userId) { values.push(userId); filters.push(`r.user_id = $${values.length}`) }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+  values.push(paging.limit, paging.offset)
+  const limitIndex = `$${values.length - 1}`
+  const offsetIndex = `$${values.length}`
   const [reviews, total] = await Promise.all([
     database.query(
-      `SELECT r.id, r.place_id, r.rating, r.content, r.image_url, r.created_at, r.updated_at,
+      `SELECT r.id, r.place_id, r.place_name, r.rating, r.content, r.image_url, r.created_at, r.updated_at,
         u.id AS user_id, u.name AS user_name, u.profile_image AS user_profile_image
        FROM place_reviews r LEFT JOIN users u ON u.id = r.user_id
        ${where}
@@ -427,18 +433,29 @@ export async function listReviews({ placeId, page, limit }) {
        LIMIT ${limitIndex} OFFSET ${offsetIndex}`,
       values,
     ),
-    database.query(`SELECT COUNT(*)::INTEGER AS count FROM place_reviews r ${where}`, placeId ? [placeId] : []),
+    database.query(`SELECT COUNT(*)::INTEGER AS count FROM place_reviews r ${where}`, values.slice(0, -2)),
   ])
   return { data: reviews.rows, pagination: { ...paging, total: total.rows[0].count } }
 }
 
-export async function createPlaceReview({ userId, placeId, rating, content, imageUrl = '' }) {
+export async function createPlaceReview({ userId, placeId, placeName = '', rating, content, imageUrl = '' }) {
   const result = await database.query(
-    `INSERT INTO place_reviews (id, user_id, place_id, rating, content, image_url)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, place_id, rating, content, image_url, created_at, updated_at`,
-    [randomUUID(), userId, placeId, rating, content, imageUrl],
+    `INSERT INTO place_reviews (id, user_id, place_id, place_name, rating, content, image_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, place_id, place_name, rating, content, image_url, created_at, updated_at`,
+    [randomUUID(), userId, placeId, placeName, rating, content, imageUrl],
   )
+  return result.rows[0]
+}
+
+export async function updatePlaceReview({ reviewId, userId, rating, content, imageUrl }) {
+  const result = await database.query(
+    `UPDATE place_reviews SET rating = $1, content = $2, image_url = $3, updated_at = NOW()
+     WHERE id = $4 AND (user_id = $5 OR $6)
+     RETURNING id, place_id, place_name, rating, content, image_url, created_at, updated_at`,
+    [rating, content, imageUrl, reviewId, userId, await isAdminUser(userId)],
+  )
+  if (!result.rowCount) { const error = new Error('REVIEW_NOT_FOUND_OR_FORBIDDEN'); error.code = 'REVIEW_NOT_FOUND_OR_FORBIDDEN'; throw error }
   return result.rows[0]
 }
 
