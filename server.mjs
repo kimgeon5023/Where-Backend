@@ -688,7 +688,7 @@ async function handleRequest(request, response) {
     const userId = authenticatedUserId(request)
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
     try { await deletePlaceReview({ reviewId: url.pathname.split('/').at(-1), userId }); return sendJson(response, 200, { ok: true })
-    } catch (error) { return sendJson(response, error?.code === 'REVIEW_FORBIDDEN' ? 403 : error?.code === 'REVIEW_NOT_FOUND' ? 404 : 500, { error: error?.code || 'REVIEW_DELETE_FAILED' }) }
+    } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 500, { error: '후기를 삭제하지 못했습니다. 다시 로그인한 뒤 시도해 주세요.' }) }
   }
   if (request.method === 'GET' && url.pathname === '/api/auth/oauth/google') return startGoogleOAuth(request, response)
   if (request.method === 'GET' && url.pathname === '/api/auth/oauth/google/callback') return completeGoogleOAuth(request, response, url)

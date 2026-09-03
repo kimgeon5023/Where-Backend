@@ -460,10 +460,11 @@ export async function updatePlaceReview({ reviewId, userId, rating, content, ima
 }
 
 export async function deletePlaceReview({ reviewId, userId }) {
-  const found = await database.query('SELECT user_id FROM place_reviews WHERE id = $1', [reviewId])
-  if (!found.rowCount) { const error = new Error('REVIEW_NOT_FOUND'); error.code = 'REVIEW_NOT_FOUND'; throw error }
-  if (found.rows[0].user_id !== userId && !(await isAdminUser(userId))) { const error = new Error('REVIEW_FORBIDDEN'); error.code = 'REVIEW_FORBIDDEN'; throw error }
-  await database.query('DELETE FROM place_reviews WHERE id = $1', [reviewId])
+  const result = await database.query(
+    'DELETE FROM place_reviews WHERE id = $1 AND (user_id = $2 OR $3) RETURNING id',
+    [reviewId, userId, await isAdminUser(userId)],
+  )
+  if (!result.rowCount) { const error = new Error('REVIEW_NOT_FOUND_OR_FORBIDDEN'); error.code = 'REVIEW_NOT_FOUND_OR_FORBIDDEN'; throw error }
 }
 
 export async function createPasswordUser({ username, name, password }) {
