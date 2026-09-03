@@ -673,7 +673,8 @@ async function handleRequest(request, response) {
       const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
       const placeName = typeof input.placeName === 'string' ? input.placeName.trim().slice(0, 160) : ''
       const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 600_000)
-      if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
+      if (!content && !imageUrl) return sendJson(response, 400, { error: '후기 내용 또는 사진을 첨부해 주세요.' })
+      if (content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
       if (!validImage) return sendJson(response, 400, { error: 'Review image must be a compressed JPEG, PNG, or WebP.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
       const review = await createPlaceReview({ userId, placeId, placeName, rating, content, imageUrl })
