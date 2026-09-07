@@ -667,21 +667,24 @@ async function handleRequest(request, response) {
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
     try {
       // Client images are compressed before upload; keep payloads bounded.
-      const input = await readJsonBody(request, 900_000)
+      // Keep photo review requests below hosting-proxy limits.
+      const input = await readJsonBody(request, 460_000)
       const content = typeof input.content === 'string' ? input.content.trim() : ''
       const rating = Number(input.rating)
       const imageUrl = typeof input.imageUrl === 'string' ? input.imageUrl : ''
       const placeName = typeof input.placeName === 'string' ? input.placeName.trim().slice(0, 160) : ''
-      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 600_000)
+      const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 380_000)
       if (!content && !imageUrl) return sendJson(response, 400, { error: '후기 내용 또는 사진을 첨부해 주세요.' })
       if (content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5) return sendJson(response, 400, { error: '후기 내용과 1~5점 별점을 확인해 주세요.' })
-      if (!validImage) return sendJson(response, 400, { error: 'Review image must be a compressed JPEG, PNG, or WebP.' })
+      if (!validImage) return sendJson(response, 400, { error: '\uCCA8\uBD80 \uC0AC\uC9C4 \uD615\uC2DD \uB610\uB294 \uC6A9\uB7C9\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694. \uC0AC\uC9C4\uC740 360KB \uC774\uD558\uB85C \uC555\uCD95\uB429\uB2C8\uB2E4.' })
       const placeId = decodeURIComponent(url.pathname.split('/')[3])
       const review = await createPlaceReview({ userId, placeId, placeName, rating, content, imageUrl })
       const [summary] = await getPlaceReviewSummaries([placeId])
       return sendJson(response, 201, { data: { ...review, user_id: userId, summary: summary || { placeId, rating, reviewCount: 1 } } })
     } catch (error) {
       console.error('Review creation failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+      if (error instanceof Error && error.message === 'REQUEST_TOO_LARGE') return sendJson(response, 413, { error: '\uC0AC\uC9C4 \uC6A9\uB7C9\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4. \uB354 \uC791\uC740 \uC0AC\uC9C4\uC744 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694.' })
+      if (error instanceof Error && error.message === 'INVALID_JSON') return sendJson(response, 400, { error: '\uB9AC\uBDF0 \uC694\uCCAD \uD615\uC2DD\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.' })
       return sendJson(response, error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 503, { error: '리뷰 서버 연결이 잠시 지연되고 있어요. 잠시 후 다시 시도해 주세요.' })
     }
   }
