@@ -317,7 +317,7 @@ function requestedSearchProfiles(category, tags, includeLodging) {
   return unique.length ? unique : [...searchableCategories].filter((item) => item !== 'lodging').map((item) => ({ category: item, categoryCode: kakaoCategoryCodes[item], tags: livePlaceMeta[item]?.tags || [] }))
 }
 
-async function searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging, maxPrice) {
+async function searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging) {
   if (!kakaoRestApiKey) throw new Error('KAKAO_PLACES_NOT_CONFIGURED')
   const selectedDistrict = seoulDistrictNames.has(area)
   const searchKeyword = keyword
@@ -360,7 +360,6 @@ async function searchKakaoPlaces(url, category, keyword, area, companion, limit,
   if (responses.every((response) => response.failed)) throw new Error('KAKAO_PLACES_UNAVAILABLE')
   const data = [...new Map(responses.flatMap((response) => response.places).map((place) => [place.id, place])).values()]
     .filter((place) => isInBounds(place, bounds))
-    .filter((place) => maxPrice === null || place.price <= maxPrice)
     .sort((a, b) => a.distanceKm - b.distanceKm)
     .slice(0, limit)
   return { data, meta: { total: data.length, area: area || '서울', category: category || 'all', source: 'kakao', page, hasMore: responses.some((response) => !response.isEnd) } }
@@ -373,8 +372,6 @@ async function findPlaces(url) {
   const keyword = url.searchParams.get('q')?.trim().toLowerCase() ?? ''
   const tags = (url.searchParams.get('tags') || '').split(',').map((tag) => tag.trim()).filter((tag) => Object.hasOwn(preferenceSearches, tag))
   const includeLodging = url.searchParams.get('includeLodging') === 'true'
-  const maxPriceParameter = url.searchParams.get('maxPrice')
-  const maxPrice = maxPriceParameter === null ? null : Number(maxPriceParameter)
   const requestedLimit = Number(url.searchParams.get('limit') ?? 24)
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 40)) : 24
   const requestedPage = Number(url.searchParams.get('page') ?? 1)
@@ -386,16 +383,13 @@ async function findPlaces(url) {
   if (!seoulDistrictNames.has(area)) {
     return { error: 'area must be one of Seoul\'s 25 districts' }
   }
-  if (maxPrice !== null && (!Number.isInteger(maxPrice) || maxPrice < 0 || maxPrice > 10_000_000)) {
-    return { error: 'maxPrice must be an integer between 0 and 10000000' }
-  }
 
   const origin = { lat: Number(url.searchParams.get('lat')) || 37.5668, lng: Number(url.searchParams.get('lng')) || 126.978 }
   const bounds = searchBounds(url)
-  const cacheKey = JSON.stringify({ area, category, companion, keyword, tags, includeLodging, maxPrice, limit, page, lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4), radius: url.searchParams.get('radius') || '', bounds, zoom: url.searchParams.get('zoom') || '' })
+  const cacheKey = JSON.stringify({ area, category, companion, keyword, tags, includeLodging, limit, page, lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4), radius: url.searchParams.get('radius') || '', bounds, zoom: url.searchParams.get('zoom') || '' })
   const cached = fromCache(placesCache, cacheKey)
   try {
-    const result = cached || cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging, maxPrice), placesCacheMaxEntries)
+    const result = cached || cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging), placesCacheMaxEntries)
     const summaries = await getPlaceReviewSummaries(result.data.map((place) => place.id))
     const summaryByPlace = new Map(summaries.map((summary) => [summary.placeId, summary]))
     return { ...result, data: result.data.map((place) => ({ ...place, ...(summaryByPlace.get(place.id) || { rating: 0, reviewCount: 0 }) })) }
