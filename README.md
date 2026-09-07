@@ -1,5 +1,11 @@
 # Where Backend
 
+## Collaboration and deployment
+
+`main` is the only production branch. Create a feature branch, open a pull request, obtain one approval, and merge only after the **Backend check** workflow passes. Render automatically deploys the resulting `main` commit.
+
+This repository is the sole source of the Where API. The frontend repository intentionally contains no backend copy; clone this repository separately whenever API work is needed.
+
 Where 프론트엔드에서 사용하는 독립형 Node.js API 서버입니다. PostgreSQL 회원 정보, Google 로그인, 친구/관계 알림, 카카오 장소 검색과 자동차 경로 조회를 제공합니다.
 
 ## 로컬 실행
