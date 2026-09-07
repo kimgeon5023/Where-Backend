@@ -40,12 +40,12 @@ const rateLimiter = createRateLimiter()
 const kakaoCategoryCodes = { food: 'FD6', cafe: 'CE7', tour: 'AT4', photo: 'AT4', activity: 'CT1', lodging: 'AD5' }
 const kakaoCategoryKeywords = { food: '맛집', cafe: '카페', tour: '관광명소', photo: '사진 명소', activity: '놀거리', lodging: '숙소' }
 const livePlaceMeta = {
-  food: { tags: ['foodie'], groupFit: ['friends', 'couple', 'family', 'alone'] },
-  cafe: { tags: ['cafe', 'rest'], groupFit: ['friends', 'couple', 'alone'] },
-  tour: { tags: ['nature', 'photo', 'rest'], groupFit: ['friends', 'couple', 'family', 'alone'] },
-  photo: { tags: ['photo'], groupFit: ['friends', 'couple', 'alone'] },
-  activity: { tags: ['activity', 'shopping'], groupFit: ['friends', 'couple', 'family'] },
-  lodging: { tags: ['rest'], groupFit: ['friends', 'couple', 'family', 'alone'] },
+  food: { tags: ['foodie'], groupFit: ['friends', 'couple', 'family', 'alone'], groupProfile: { space: 'large', reservationCheckRecommended: true } },
+  cafe: { tags: ['cafe', 'rest'], groupFit: ['friends', 'couple', 'alone'], groupProfile: { space: 'medium', reservationCheckRecommended: false } },
+  tour: { tags: ['nature', 'photo', 'rest'], groupFit: ['friends', 'couple', 'family', 'alone'], groupProfile: { space: 'large', reservationCheckRecommended: false } },
+  photo: { tags: ['photo'], groupFit: ['friends', 'couple', 'alone'], groupProfile: { space: 'small', reservationCheckRecommended: false } },
+  activity: { tags: ['activity', 'shopping'], groupFit: ['friends', 'couple', 'family'], groupProfile: { space: 'large', reservationCheckRecommended: true } },
+  lodging: { tags: ['rest'], groupFit: ['friends', 'couple', 'family', 'alone'], groupProfile: { space: 'medium', reservationCheckRecommended: true } },
 }
 const preferenceSearches = {
   cafe: { category: 'cafe', categoryCode: 'CE7', tags: ['cafe', 'rest'] },
@@ -286,7 +286,7 @@ function kakaoPlaceToPlace(item, category, origin, tags) {
   const metadata = livePlaceMeta[category] || livePlaceMeta.tour
   const price = estimatedPrice(category, item.id)
   const lodging = category === 'lodging' ? { pricePerNight: price, capacity: 2, parking: true, bed: '더블 또는 트윈' } : undefined
-  return { id: `kakao-${item.id}`, name: item.place_name, area: item.road_address_name || item.address_name || '서울', category: category || 'tour', lat, lng, tags: tags || metadata.tags, groupFit: metadata.groupFit, indoor: category !== 'tour' && category !== 'photo', price, durationMin: category === 'food' ? 70 : 60, rating: 0, description: item.category_name || item.place_name, image: '', accent: '#1d9b77', distanceKm, phone: item.phone || '', placeUrl: item.place_url || '', lodging }
+  return { id: `kakao-${item.id}`, name: item.place_name, area: item.road_address_name || item.address_name || '서울', category: category || 'tour', lat, lng, tags: tags || metadata.tags, groupFit: metadata.groupFit, groupProfile: metadata.groupProfile, indoor: category !== 'tour' && category !== 'photo', price, durationMin: category === 'food' ? 70 : 60, rating: 0, description: item.category_name || item.place_name, image: '', accent: '#1d9b77', distanceKm, phone: item.phone || '', placeUrl: item.place_url || '', lodging }
 }
 
 function searchBounds(url) {
@@ -317,7 +317,14 @@ function requestedSearchProfiles(category, tags, includeLodging) {
   return unique.length ? unique : [...searchableCategories].filter((item) => item !== 'lodging').map((item) => ({ category: item, categoryCode: kakaoCategoryCodes[item], tags: livePlaceMeta[item]?.tags || [] }))
 }
 
-async function searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging) {
+function groupSearchPriority(place, headcount) {
+  if (headcount <= 2) return 0
+  const profile = place.groupProfile
+  if (headcount <= 4) return profile?.space === 'large' ? 3 : profile?.space === 'medium' ? 2 : 0
+  return profile?.space === 'large' ? (profile.reservationCheckRecommended ? 6 : 5) : profile?.space === 'medium' ? 2 : 0
+}
+
+async function searchKakaoPlaces(url, category, keyword, area, companion, headcount, limit, page, origin, bounds, tags, includeLodging, maxPrice) {
   if (!kakaoRestApiKey) throw new Error('KAKAO_PLACES_NOT_CONFIGURED')
   const selectedDistrict = seoulDistrictNames.has(area)
   const searchKeyword = keyword
@@ -360,7 +367,8 @@ async function searchKakaoPlaces(url, category, keyword, area, companion, limit,
   if (responses.every((response) => response.failed)) throw new Error('KAKAO_PLACES_UNAVAILABLE')
   const data = [...new Map(responses.flatMap((response) => response.places).map((place) => [place.id, place])).values()]
     .filter((place) => isInBounds(place, bounds))
-    .sort((a, b) => a.distanceKm - b.distanceKm)
+    .filter((place) => maxPrice === null || place.price <= maxPrice)
+    .sort((a, b) => groupSearchPriority(b, headcount) - groupSearchPriority(a, headcount) || a.distanceKm - b.distanceKm)
     .slice(0, limit)
   return { data, meta: { total: data.length, area: area || '서울', category: category || 'all', source: 'kakao', page, hasMore: responses.some((response) => !response.isEnd) } }
 }
@@ -369,9 +377,13 @@ async function findPlaces(url) {
   const area = url.searchParams.get('area')?.trim() ?? ''
   const category = url.searchParams.get('category')?.trim() ?? ''
   const companion = url.searchParams.get('companion')?.trim() ?? ''
+  const headcountParameter = url.searchParams.get('headcount')
+  const headcount = headcountParameter === null ? 1 : Number(headcountParameter)
   const keyword = url.searchParams.get('q')?.trim().toLowerCase() ?? ''
   const tags = (url.searchParams.get('tags') || '').split(',').map((tag) => tag.trim()).filter((tag) => Object.hasOwn(preferenceSearches, tag))
   const includeLodging = url.searchParams.get('includeLodging') === 'true'
+  const maxPriceParameter = url.searchParams.get('maxPrice')
+  const maxPrice = maxPriceParameter === null ? null : Number(maxPriceParameter)
   const requestedLimit = Number(url.searchParams.get('limit') ?? 24)
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 40)) : 24
   const requestedPage = Number(url.searchParams.get('page') ?? 1)
@@ -383,13 +395,19 @@ async function findPlaces(url) {
   if (!seoulDistrictNames.has(area)) {
     return { error: 'area must be one of Seoul\'s 25 districts' }
   }
+  if (!Number.isInteger(headcount) || headcount < 1 || headcount > 100) {
+    return { error: 'headcount must be an integer between 1 and 100' }
+  }
+  if (maxPrice !== null && (!Number.isInteger(maxPrice) || maxPrice < 0 || maxPrice > 10_000_000)) {
+    return { error: 'maxPrice must be an integer between 0 and 10000000' }
+  }
 
   const origin = { lat: Number(url.searchParams.get('lat')) || 37.5668, lng: Number(url.searchParams.get('lng')) || 126.978 }
   const bounds = searchBounds(url)
-  const cacheKey = JSON.stringify({ area, category, companion, keyword, tags, includeLodging, limit, page, lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4), radius: url.searchParams.get('radius') || '', bounds, zoom: url.searchParams.get('zoom') || '' })
+  const cacheKey = JSON.stringify({ area, category, companion, headcount, keyword, tags, includeLodging, maxPrice, limit, page, lat: origin.lat.toFixed(4), lng: origin.lng.toFixed(4), radius: url.searchParams.get('radius') || '', bounds, zoom: url.searchParams.get('zoom') || '' })
   const cached = fromCache(placesCache, cacheKey)
   try {
-    const result = cached || cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, limit, page, origin, bounds, tags, includeLodging), placesCacheMaxEntries)
+    const result = cached || cacheValue(placesCache, cacheKey, await searchKakaoPlaces(url, category, keyword, area, companion, headcount, limit, page, origin, bounds, tags, includeLodging, maxPrice), placesCacheMaxEntries)
     const summaries = await getPlaceReviewSummaries(result.data.map((place) => place.id))
     const summaryByPlace = new Map(summaries.map((summary) => [summary.placeId, summary]))
     return { ...result, data: result.data.map((place) => ({ ...place, ...(summaryByPlace.get(place.id) || { rating: 0, reviewCount: 0 }) })) }
