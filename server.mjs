@@ -289,6 +289,24 @@ function kakaoPlaceToPlace(item, category, origin, tags) {
   return { id: `kakao-${item.id}`, name: item.place_name, area: item.road_address_name || item.address_name || '서울', category: category || 'tour', lat, lng, tags: tags || metadata.tags, groupFit: metadata.groupFit, groupProfile: metadata.groupProfile, indoor: category !== 'tour' && category !== 'photo', price, durationMin: category === 'food' ? 70 : 60, rating: 0, description: item.category_name || item.place_name, image: '', accent: '#1d9b77', distanceKm, phone: item.phone || '', placeUrl: item.place_url || '', lodging }
 }
 
+const kakaoImageCache = new Map()
+async function kakaoPlaceImage(placeUrl) {
+  if (!placeUrl) return ''
+  if (kakaoImageCache.has(placeUrl)) return kakaoImageCache.get(placeUrl)
+  const request = (async () => {
+    try {
+      const response = await fetch(placeUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(3_000) })
+      if (!response.ok) return ''
+      const html = await response.text()
+      const match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+        || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)
+      return match?.[1] ? match[1].replace(/&amp;/g, '&') : ''
+    } catch { return '' }
+  })()
+  kakaoImageCache.set(placeUrl, request)
+  return request
+}
+
 function searchBounds(url) {
   const south = Number(url.searchParams.get('south'))
   const north = Number(url.searchParams.get('north'))
@@ -370,7 +388,8 @@ async function searchKakaoPlaces(url, category, keyword, area, companion, headco
     .filter((place) => maxPrice === null || place.price <= maxPrice)
     .sort((a, b) => groupSearchPriority(b, headcount) - groupSearchPriority(a, headcount) || a.distanceKm - b.distanceKm)
     .slice(0, limit)
-  return { data, meta: { total: data.length, area: area || '서울', category: category || 'all', source: 'kakao', page, hasMore: responses.some((response) => !response.isEnd) } }
+  const enriched = await Promise.all(data.map(async (place) => ({ ...place, image: await kakaoPlaceImage(place.placeUrl) })))
+  return { data: enriched, meta: { total: enriched.length, area: area || '서울', category: category || 'all', source: 'kakao', page, hasMore: responses.some((response) => !response.isEnd) } }
 }
 
 async function findPlaces(url) {
