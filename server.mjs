@@ -391,7 +391,13 @@ async function searchKakaoPlaces(url, category, keyword, area, companion, headco
     .filter((place) => maxPrice === null || place.price <= maxPrice)
     .sort((a, b) => groupSearchPriority(b, headcount) - groupSearchPriority(a, headcount) || a.distanceKm - b.distanceKm)
     .slice(0, limit)
-  const enriched = await Promise.all(data.map(async (place) => ({ ...place, image: await kakaoPlaceImage(place.placeUrl) })))
+  const enriched = await Promise.all(data.map(async (place) => {
+    const image = await kakaoPlaceImage(place.placeUrl)
+    // Kakao Local does not expose a photo field. Use Kakao's official place
+    // preview image when a place page image cannot be fetched server-side.
+    const preview = `https://staticmap.kakao.com/staticmap/og?type=place&srs=wgs84&size=800x400&service=placeweb&m=${place.lng},${place.lat}`
+    return { ...place, image: image || preview }
+  }))
   return { data: enriched, meta: { total: enriched.length, area: area || '서울', category: category || 'all', source: 'kakao', page, hasMore: responses.some((response) => !response.isEnd) } }
 }
 
