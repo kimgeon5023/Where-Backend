@@ -3,7 +3,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { addFriend, authenticatePasswordUser, changePassword, createPasswordUser, createPlaceReview, createRelationshipRequest, createTrip, deleteFavorite, deletePlaceReview, deleteTrip, deleteUser, ensureConfiguredAdmin, getPlaceReviewSummaries, getPublicTrip, getTrip, initializeDatabase, isAdminUser, listCourses, listFavorites, listFriends, listNotifications, listOtherUsers, listReviews, listUsers, respondToRelationshipRequest, searchSeoulAreas, siteId, updatePlaceReview, updateTrip, updateUserProfile, upsertFavorite, upsertGoogleUser } from './database.mjs'
-import { createGoogleAuthorizationUrl, fetchGoogleProfile } from './oauth.mjs'
+import { createGoogleAuthorizationUrl, fetchGoogleProfile, verifyGoogleIdToken } from './oauth.mjs'
 import { allowedOrigin, allowedOrigins, createRateLimiter, requestIp } from './security.mjs'
 
 const staticRoot = resolve(fileURLToPath(new URL('../dist/', import.meta.url)))
@@ -76,6 +76,7 @@ function sendJson(response, status, body) {
 function isRateLimited(request, url) {
   const routes = [
     [request.method === 'POST' && url.pathname === '/api/auth/login', 5, 15 * 60_000],
+    [request.method === 'POST' && url.pathname === '/api/auth/google/native', 10, 15 * 60_000],
     [request.method === 'POST' && url.pathname === '/api/auth/signup', 5, 60 * 60_000],
     [request.method === 'POST' && /^\/api\/places\/[^/]+\/reviews$/.test(url.pathname), 10, 60_000],
     [request.method === 'POST' && url.pathname === '/api/favorites', 40, 60_000],
@@ -161,6 +162,20 @@ async function completeGoogleOAuth(request, response, url) {
   }
 }
 
+async function completeNativeGoogleSignIn(request, response) {
+  try {
+    const { idToken } = await readJsonBody(request, 16_384)
+    const profile = await verifyGoogleIdToken(idToken)
+    const user = await upsertGoogleUser(profile)
+    return sendJson(response, 200, { user, token: createAuthToken(user.id) })
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'GOOGLE_NATIVE_SIGN_IN_FAILED'
+    console.error('Native Google sign-in failed:', code)
+    if (code === 'INVALID_JSON' || code === 'GOOGLE_ID_TOKEN_REQUIRED') return sendJson(response, 400, { error: 'Google 로그인 정보가 필요합니다.' })
+    if (code === 'OAUTH_PROVIDER_NOT_CONFIGURED') return sendJson(response, 503, { error: 'Google 로그인이 설정되지 않았습니다.' })
+    return sendJson(response, 401, { error: 'Google 로그인 정보를 확인하지 못했습니다.' })
+  }
+}
 function fromCache(cache, key) {
   const hit = cache.get(key)
   if (!hit || hit.expiresAt <= Date.now()) {
@@ -754,6 +769,7 @@ async function handleRequest(request, response) {
     try { await deletePlaceReview({ reviewId: url.pathname.split('/').at(-1), userId }); return sendJson(response, 200, { ok: true })
     } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 500, { error: '후기를 삭제하지 못했습니다. 다시 로그인한 뒤 시도해 주세요.' }) }
   }
+  if (request.method === 'POST' && url.pathname === '/api/auth/google/native') return completeNativeGoogleSignIn(request, response)
   if (request.method === 'GET' && url.pathname === '/api/auth/oauth/google') return startGoogleOAuth(request, response)
   if (request.method === 'GET' && url.pathname === '/api/auth/oauth/google/callback') return completeGoogleOAuth(request, response, url)
   if (request.method === 'GET' && url.pathname === '/api/social/users') {

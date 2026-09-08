@@ -1,9 +1,13 @@
+import { OAuth2Client } from 'google-auth-library'
+
 const google = {
   authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
   tokenUrl: 'https://oauth2.googleapis.com/token',
   clientId: () => process.env.GOOGLE_CLIENT_ID?.trim(),
   clientSecret: () => process.env.GOOGLE_CLIENT_SECRET?.trim(),
 }
+
+const googleTokenVerifier = new OAuth2Client()
 
 function googleConfig() {
   if (!google.clientId() || !google.clientSecret()) throw new Error('OAUTH_PROVIDER_NOT_CONFIGURED')
@@ -63,4 +67,21 @@ async function fetchGoogleUserInfo(accessToken) {
 export async function fetchGoogleProfile(code, redirectUri) {
   const accessToken = await tokenRequest(code, redirectUri)
   return fetchGoogleUserInfo(accessToken)
+}
+
+export async function verifyGoogleIdToken(idToken) {
+  const clientId = google.clientId()
+  if (!clientId) throw new Error('OAUTH_PROVIDER_NOT_CONFIGURED')
+  if (typeof idToken !== 'string' || !idToken.trim()) throw new Error('GOOGLE_ID_TOKEN_REQUIRED')
+
+  const ticket = await googleTokenVerifier.verifyIdToken({ idToken, audience: clientId })
+  const profile = ticket.getPayload()
+  if (!profile?.sub || !profile.email || profile.email_verified !== true) throw new Error('GOOGLE_ID_TOKEN_INVALID')
+
+  return {
+    providerUserId: profile.sub,
+    name: profile.name || profile.email.split('@')[0],
+    email: profile.email,
+    profileImage: profile.picture || '',
+  }
 }
