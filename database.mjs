@@ -57,155 +57,10 @@ function passwordMatches(password, hash, salt) {
 }
 
 export async function initializeDatabase() {
-  // Do not fail module loading when a host has not injected its secret yet.
-  // The HTTP server can still answer its health check and report the database
-  // state instead of being terminated by an import-time exception.
+  // Schema changes are applied exclusively from database/migrations.
   if (!connectionString) throw new Error('DATABASE_URL is required.')
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY,
-      username VARCHAR(20) NOT NULL UNIQUE,
-      name VARCHAR(20) NOT NULL,
-      password_hash TEXT NOT NULL,
-      password_salt TEXT NOT NULL,
-      provider TEXT NOT NULL DEFAULT 'password',
-      role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-      profile_image TEXT NOT NULL DEFAULT '',
-      source_site TEXT NOT NULL DEFAULT 'legacy',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_login_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `)
-  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS source_site TEXT NOT NULL DEFAULT 'legacy'`)
-  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`)
-  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS provider_user_id TEXT`)
-  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'`)
-  await database.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check`)
-  await database.query(`ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'))`)
-  await database.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`)
-  await database.query(`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`)
-  await database.query(`ALTER TABLE users ALTER COLUMN password_salt DROP NOT NULL`)
-  await database.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS users_provider_identity_idx
-    ON users (provider, provider_user_id)
-    WHERE provider_user_id IS NOT NULL
-  `)
-  await database.query(`CREATE INDEX IF NOT EXISTS users_source_site_idx ON users (source_site)`)
-  await database.query(`CREATE INDEX IF NOT EXISTS users_created_at_idx ON users (created_at DESC)`)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS friendships (
-      id UUID PRIMARY KEY,
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      friend_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (user_id, friend_id),
-      CHECK (user_id <> friend_id)
-    )
-  `)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS relationship_requests (
-      id UUID PRIMARY KEY,
-      sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      recipient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      relationship_type TEXT NOT NULL CHECK (relationship_type IN ('friend', 'couple', 'family')),
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      responded_at TIMESTAMPTZ
-    )
-  `)
-  await database.query(`CREATE INDEX IF NOT EXISTS relationship_requests_recipient_idx ON relationship_requests (recipient_id, status, created_at DESC)`)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS trips (
-      id UUID PRIMARY KEY,
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      title VARCHAR(120) NOT NULL,
-      start_area TEXT NOT NULL DEFAULT '',
-      date_start DATE,
-      date_end DATE,
-      companion TEXT NOT NULL DEFAULT 'alone',
-      headcount SMALLINT NOT NULL DEFAULT 1 CHECK (headcount >= 1 AND headcount <= 100),
-      budget_per_person INTEGER NOT NULL DEFAULT 0 CHECK (budget_per_person >= 0),
-      transport TEXT NOT NULL DEFAULT 'public' CHECK (transport IN ('public', 'car')),
-      weather TEXT NOT NULL DEFAULT 'sunny',
-      likes JSONB NOT NULL DEFAULT '[]'::jsonb,
-      dislikes JSONB NOT NULL DEFAULT '[]'::jsonb,
-      route_coordinates JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS trip_stops (
-      id UUID PRIMARY KEY,
-      trip_id UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
-      stop_order SMALLINT NOT NULL CHECK (stop_order >= 0),
-      place_id TEXT,
-      place_name TEXT NOT NULL,
-      category TEXT NOT NULL DEFAULT 'tour',
-      area TEXT NOT NULL DEFAULT '',
-      latitude DOUBLE PRECISION NOT NULL CHECK (latitude >= -90 AND latitude <= 90),
-      longitude DOUBLE PRECISION NOT NULL CHECK (longitude >= -180 AND longitude <= 180),
-      estimated_cost INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost >= 0),
-      duration_min INTEGER NOT NULL DEFAULT 0 CHECK (duration_min >= 0),
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (trip_id, stop_order)
-    )
-  `)
-  await database.query(`CREATE INDEX IF NOT EXISTS trips_user_updated_idx ON trips (user_id, updated_at DESC)`)
-  await database.query(`CREATE INDEX IF NOT EXISTS trip_stops_trip_order_idx ON trip_stops (trip_id, stop_order)`)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS seoul_areas (
-      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `)
-  await database.query(`CREATE INDEX IF NOT EXISTS seoul_areas_name_idx ON seoul_areas (name)`)
-  await database.query(
-    `INSERT INTO seoul_areas (name)
-     SELECT DISTINCT unnest($1::text[])
-     ON CONFLICT (name) DO NOTHING`,
-    [seoulDistrictNames],
-  )
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS favorites (
-      id UUID PRIMARY KEY,
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      place_id TEXT NOT NULL,
-      place_name VARCHAR(255) NOT NULL,
-      address TEXT NOT NULL DEFAULT '',
-      category VARCHAR(100) NOT NULL DEFAULT 'tour',
-      image_url TEXT NOT NULL DEFAULT '',
-      latitude DOUBLE PRECISION,
-      longitude DOUBLE PRECISION,
-      place_data JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (user_id, place_id)
-    )
-  `)
-  await database.query(`CREATE INDEX IF NOT EXISTS favorites_user_created_idx ON favorites (user_id, created_at DESC)`)
-  await database.query(`
-    CREATE TABLE IF NOT EXISTS place_reviews (
-      id UUID PRIMARY KEY,
-      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-      place_id TEXT NOT NULL,
-      place_name TEXT NOT NULL DEFAULT '',
-      rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
-      content TEXT NOT NULL CHECK (char_length(content) <= 1000),
-      image_url TEXT NOT NULL DEFAULT '',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `)
-  // Existing production databases were created before review photos existed.
-  // Keep startup migration-free, but make this additive schema requirement safe.
-  await database.query(`ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`)
-  await database.query(`ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS place_name TEXT NOT NULL DEFAULT ''`)
-  await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_place_created_idx ON place_reviews (place_id, created_at DESC)`)
-  await database.query(`CREATE INDEX IF NOT EXISTS place_reviews_created_idx ON place_reviews (created_at DESC)`)
+  await database.query('SELECT 1')
 }
-
 function paginationValues(page, limit) {
   const safePage = Math.max(1, Math.floor(Number(page) || 1))
   const safeLimit = Math.min(50, Math.max(1, Math.floor(Number(limit) || 20)))
@@ -716,18 +571,28 @@ export async function getPlaceReviewSummaries(placeIds) {
 }
 
 export async function runMigrations() {
-  const directory = join(dirname(fileURLToPath(import.meta.url)), '..', 'database', 'migrations')
-  await database.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-  const files = (await readdir(directory)).filter((file) => file.endsWith('.sql')).sort()
-  for (const file of files) {
-    const applied = await database.query('SELECT 1 FROM schema_migrations WHERE name = $1', [file])
-    if (applied.rowCount) continue
-    const client = await database.connect()
-    try {
+  if (!connectionString) throw new Error('DATABASE_URL is required.')
+  const directory = join(dirname(fileURLToPath(import.meta.url)), 'database', 'migrations')
+  const client = await database.connect()
+  try {
+    await client.query(`SELECT pg_advisory_lock(hashtext('where_database_migrations'))`)
+    await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+    const files = (await readdir(directory)).filter((file) => file.endsWith('.sql')).sort()
+    for (const file of files) {
+      const applied = await client.query('SELECT 1 FROM schema_migrations WHERE name = $1', [file])
+      if (applied.rowCount) continue
       await client.query('BEGIN')
-      await client.query(await readFile(join(directory, file), 'utf8'))
-      await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file])
-      await client.query('COMMIT')
-    } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+      try {
+        await client.query(await readFile(join(directory, file), 'utf8'))
+        await client.query('INSERT INTO schema_migrations (name) VALUES ($1)', [file])
+        await client.query('COMMIT')
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      }
+    }
+  } finally {
+    await client.query(`SELECT pg_advisory_unlock(hashtext('where_database_migrations'))`).catch(() => {})
+    client.release()
   }
 }

@@ -20,7 +20,7 @@ Windows PowerShell에서는 환경 파일을 다음처럼 복사할 수 있습�
 Copy-Item .env.example .env
 ```
 
-`.env`의 `DATABASE_URL`을 먼저 설정하세요. 서버가 시작될 때 필요한 테이블과 인덱스를 자동으로 생성합니다. 실제 비밀번호와 API 키가 들어간 `.env`는 Git에 커밋하지 마세요.
+`.env`의 `DATABASE_URL`을 먼저 설정하고 최초 실행 전 `npm run migrate`를 실행하세요. 스키마 정의는 `database/migrations`에서만 관리하며 서버 시작 과정에서는 테이블이나 인덱스를 변경하지 않습니다. 실제 비밀번호와 API 키가 들어간 `.env`는 Git에 커밋하지 마세요.
 
 정상 실행 여부는 `http://localhost:3001/api/health`에서 확인할 수 있습니다.
 
@@ -73,7 +73,7 @@ https://YOUR_RENDER_DOMAIN/api/auth/oauth/google/callback
 저장소 루트의 `render.yaml`을 Blueprint로 사용하거나 Web Service를 직접 만들 수 있습니다.
 
 - Build command: `npm ci`
-- Start command: `npm start`
+- Start command: `npm run migrate && npm start`
 - Health check: `/api/health`
 
 필요한 환경변수 이름은 `.env.example`과 `render.yaml`에 정리되어 있습니다.
