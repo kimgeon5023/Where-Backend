@@ -660,7 +660,10 @@ async function handleRequest(request, response) {
       const validation = tripInput(await readJsonBody(request, 250_000))
       if ('error' in validation) return sendJson(response, 400, validation)
       return sendJson(response, 201, { data: await createTrip({ userId, input: validation.value }) })
-    } catch (error) { return sendJson(response, error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 400, { error: '코스를 저장하지 못했습니다.' }) }
+    } catch (error) {
+      console.error('Trip creation failed:', error?.code || (error instanceof Error ? error.message : 'UNKNOWN_ERROR'))
+      return sendJson(response, error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 400, { error: '코스를 저장하지 못했습니다.' })
+    }
   }
   if (request.method === 'GET' && /^\/api\/trips\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)
@@ -676,7 +679,10 @@ async function handleRequest(request, response) {
       if ('error' in validation) return sendJson(response, 400, validation)
       const data = await updateTrip({ userId, tripId: decodeURIComponent(url.pathname.split('/').at(-1) || ''), input: validation.value })
       return sendJson(response, 200, { data })
-    } catch (error) { return sendJson(response, error?.code === 'TRIP_NOT_FOUND' ? 404 : error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 400, { error: '코스를 수정하지 못했습니다.' }) }
+    } catch (error) {
+      console.error('Trip update failed:', error?.code || (error instanceof Error ? error.message : 'UNKNOWN_ERROR'))
+      return sendJson(response, error?.code === 'TRIP_NOT_FOUND' ? 404 : error instanceof Error && error.message === 'REQUEST_TOO_LARGE' ? 413 : 400, { error: '코스를 수정하지 못했습니다.' })
+    }
   }
   if (request.method === 'DELETE' && /^\/api\/trips\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)

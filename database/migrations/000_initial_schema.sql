@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS trips (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Legacy databases created before managed migrations do not have the sharing
+-- columns above. Add them before creating indexes so this baseline can safely
+-- adopt those databases as well as initialize a new one.
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE trips ADD COLUMN IF NOT EXISTS share_token TEXT;
+
 CREATE INDEX IF NOT EXISTS trips_user_updated_idx ON trips (user_id, updated_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS trips_share_token_unique_idx
   ON trips (share_token)
