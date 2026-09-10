@@ -26,8 +26,16 @@ const kakaoMobilityRestApiKey = process.env.KAKAO_MOBILITY_REST_API_KEY?.trim() 
 const cacheTtlMs = 3 * 60 * 1000
 const placesCache = new Map()
 const routesCache = new Map()
+const placeImagesCache = new Map()
+const placeImageLookups = new Map()
 const placesCacheMaxEntries = 250
 const routesCacheMaxEntries = 100
+const placeImagesCacheMaxEntries = 500
+const placeImageSuccessTtlMs = 6 * 60 * 60 * 1000
+const placeImageEmptyTtlMs = 15 * 60 * 1000
+const maxConcurrentPlaceImageLookups = 4
+let activePlaceImageLookups = 0
+const placeImageLookupWaiters = []
 // Keep tokens valid across server restarts when a deployment has not yet set a
 // dedicated secret. DATABASE_URL is required and remains server-only; production
 // deployments should still provide AUTH_TOKEN_SECRET explicitly.
@@ -188,14 +196,27 @@ function fromCache(cache, key) {
   return hit.value
 }
 
-function cacheValue(cache, key, value, maxEntries) {
+function cacheValue(cache, key, value, maxEntries, ttlMs = cacheTtlMs) {
   const now = Date.now()
   for (const [cachedKey, entry] of cache) {
     if (entry.expiresAt <= now) cache.delete(cachedKey)
   }
   while (cache.size >= maxEntries) cache.delete(cache.keys().next().value)
-  cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs })
+  cache.set(key, { value, expiresAt: Date.now() + ttlMs })
   return value
+}
+
+async function withPlaceImageLookupSlot(task) {
+  if (activePlaceImageLookups >= maxConcurrentPlaceImageLookups) {
+    await new Promise((resolve) => placeImageLookupWaiters.push(resolve))
+  }
+  activePlaceImageLookups += 1
+  try {
+    return await task()
+  } finally {
+    activePlaceImageLookups -= 1
+    placeImageLookupWaiters.shift()?.()
+  }
 }
 
 function haversineKm(lat1, lng1, lat2, lng2) {
@@ -259,6 +280,38 @@ async function kakaoFetch(url, options, attempts = 2) {
     if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 250))
   }
   throw lastError || new Error('KAKAO_UNAVAILABLE')
+}
+
+async function findKakaoPlaceImage({ placeId, name, area }) {
+  const cacheKey = `${placeId}:${name}:${area}`
+  const cached = fromCache(placeImagesCache, cacheKey)
+  if (cached) return cached
+  const pending = placeImageLookups.get(cacheKey)
+  if (pending) return pending
+
+  const lookup = withPlaceImageLookupSlot(async () => {
+    if (!kakaoRestApiKey) throw new Error('KAKAO_IMAGE_SEARCH_NOT_CONFIGURED')
+    const params = new URLSearchParams({ query: `${name} ${area}`.trim(), sort: 'accuracy', size: '5' })
+    const response = await kakaoFetch(`https://dapi.kakao.com/v2/search/image?${params}`, {
+      headers: { Authorization: `KakaoAK ${kakaoRestApiKey}` },
+    })
+    if (!response.ok) throw new Error(`KAKAO_IMAGE_SEARCH_${response.status}`)
+    const payload = await response.json()
+    const document = (payload.documents || []).find((item) => {
+      const candidate = item.thumbnail_url || item.image_url
+      return typeof candidate === 'string' && /^https:\/\//i.test(candidate)
+    })
+    const result = document
+      ? { imageUrl: document.thumbnail_url || document.image_url, sourceUrl: document.doc_url || '' }
+      : { imageUrl: '', sourceUrl: '' }
+    return cacheValue(placeImagesCache, cacheKey, result, placeImagesCacheMaxEntries, result.imageUrl ? placeImageSuccessTtlMs : placeImageEmptyTtlMs)
+  }).catch((error) => {
+    console.warn('Kakao place image search failed:', error instanceof Error ? error.message : 'UNKNOWN_ERROR')
+    return cacheValue(placeImagesCache, cacheKey, { imageUrl: '', sourceUrl: '' }, placeImagesCacheMaxEntries, placeImageEmptyTtlMs)
+  }).finally(() => placeImageLookups.delete(cacheKey))
+
+  placeImageLookups.set(cacheKey, lookup)
+  return lookup
 }
 
 function tripInput(input) {
@@ -908,6 +961,13 @@ async function handleRequest(request, response) {
   if (request.method === 'GET' && url.pathname === '/api/places') {
     const result = await findPlaces(url)
     return 'error' in result ? sendJson(response, result.status || 400, { error: result.error }) : sendJson(response, 200, result)
+  }
+  if (request.method === 'GET' && /^\/api\/places\/[^/]+\/image$/.test(url.pathname)) {
+    const placeId = decodeURIComponent(url.pathname.split('/')[3]).trim().slice(0, 160)
+    const name = (url.searchParams.get('name') || '').trim().slice(0, 160)
+    const area = (url.searchParams.get('area') || '').trim().slice(0, 500)
+    if (!placeId || !name) return sendJson(response, 400, { error: 'INVALID_PLACE_IMAGE_REQUEST' })
+    return sendJson(response, 200, { data: await findKakaoPlaceImage({ placeId, name, area }) })
   }
   if (request.method === 'POST' && url.pathname === '/api/route') {
     try {
