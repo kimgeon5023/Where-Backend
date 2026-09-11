@@ -819,13 +819,17 @@ async function handleRequest(request, response) {
       const validImage = !imageUrl || (/^data:image\/(jpeg|png|webp);base64,/i.test(imageUrl) && imageUrl.length <= 700_000)
       if (!content || content.length > 1000 || !Number.isInteger(rating) || rating < 1 || rating > 5 || !validImage) return sendJson(response, 400, { error: '후기 내용, 별점, 사진을 확인해 주세요.' })
       const review = await updatePlaceReview({ reviewId: url.pathname.split('/').at(-1), userId, rating, content, imageUrl })
-      return sendJson(response, 200, { data: { ...review, user_id: userId } })
+      const [summary] = await getPlaceReviewSummaries([review.place_id])
+      return sendJson(response, 200, { data: { ...review, user_id: userId, summary: summary || { placeId: review.place_id, rating, reviewCount: 1 } } })
     } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 400, { error: '후기를 수정하지 못했습니다.' }) }
   }
   if (request.method === 'DELETE' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)
     if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
-    try { await deletePlaceReview({ reviewId: url.pathname.split('/').at(-1), userId }); return sendJson(response, 200, { ok: true })
+    try {
+      const deleted = await deletePlaceReview({ reviewId: decodeURIComponent(url.pathname.split('/').at(-1) || ''), userId })
+      const [summary] = await getPlaceReviewSummaries([deleted.place_id])
+      return sendJson(response, 200, { ok: true, summary: summary || { placeId: deleted.place_id, rating: 0, reviewCount: 0 } })
     } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 500, { error: '후기를 삭제하지 못했습니다. 다시 로그인한 뒤 시도해 주세요.' }) }
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/google/native') return completeNativeGoogleSignIn(request, response)
