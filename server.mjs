@@ -825,12 +825,17 @@ async function handleRequest(request, response) {
   }
   if (request.method === 'DELETE' && /^\/api\/reviews\/[^/]+$/.test(url.pathname)) {
     const userId = authenticatedUserId(request)
-    if (!userId) return sendJson(response, 401, { error: '로그인이 필요합니다.' })
+    if (!userId) return sendJson(response, 401, { error: '로그인 정보가 만료되었습니다. 다시 로그인해 주세요.' })
     try {
       const deleted = await deletePlaceReview({ reviewId: decodeURIComponent(url.pathname.split('/').at(-1) || ''), userId })
-      const [summary] = await getPlaceReviewSummaries([deleted.place_id])
-      return sendJson(response, 200, { ok: true, summary: summary || { placeId: deleted.place_id, rating: 0, reviewCount: 0 } })
-    } catch (error) { return sendJson(response, error?.code === 'REVIEW_NOT_FOUND_OR_FORBIDDEN' ? 404 : 500, { error: '후기를 삭제하지 못했습니다. 다시 로그인한 뒤 시도해 주세요.' }) }
+      const requestedPlaceId = (url.searchParams.get('placeId') || '').trim().slice(0, 255)
+      const placeId = deleted?.place_id || requestedPlaceId
+      const [summary] = placeId ? await getPlaceReviewSummaries([placeId]) : []
+      return sendJson(response, 200, { ok: true, deleted: Boolean(deleted), summary: placeId ? summary || { placeId, rating: 0, reviewCount: 0 } : null })
+    } catch (error) {
+      const status = error?.code === 'REVIEW_FORBIDDEN' ? 403 : 500
+      return sendJson(response, status, { error: status === 403 ? '본인이 작성한 후기만 삭제할 수 있습니다.' : '후기 삭제 중 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' })
+    }
   }
   if (request.method === 'POST' && url.pathname === '/api/auth/google/native') return completeNativeGoogleSignIn(request, response)
   if (request.method === 'GET' && url.pathname === '/api/auth/oauth/google') return startGoogleOAuth(request, response)
